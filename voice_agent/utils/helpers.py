@@ -50,7 +50,7 @@ def normalize_text_for_tts(text: str) -> str:
     # Remove markdown headers (# ## ###)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
 
-    # Replace bullet points with natural pauses
+    # Replace bullet points with sentence breaks (natural pauses when spoken)
     text = re.sub(r"^\s*[-•*]\s+", "", text, flags=re.MULTILINE)
 
     # Remove markdown links [text](url) → text
@@ -62,12 +62,14 @@ def normalize_text_for_tts(text: str) -> str:
     # Make common symbols speakable before ASCII cleanup.
     text = re.sub(r"\s*&\s*", " and ", text)
     text = re.sub(r"\s*\+\s*", " plus ", text)
+    text = re.sub(r"\s*;\s*", ". ", text)
+    text = re.sub(r"\s*:\s+", ". ", text)
 
     # Remove horizontal rules
     text = re.sub(r"^---+$", "", text, flags=re.MULTILINE)
 
-    # Collapse multiple blank lines into one
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Line breaks become sentence boundaries (avoids run-on lists)
+    text = re.sub(r"\n+", ". ", text)
 
     # Normalize unicode characters (e.g., smart quotes → straight)
     text = unicodedata.normalize("NFKD", text)
@@ -75,8 +77,14 @@ def normalize_text_for_tts(text: str) -> str:
     # Remove non-ASCII characters that TTS cannot pronounce
     text = text.encode("ascii", errors="ignore").decode("ascii")
 
-    # Collapse excessive whitespace
-    text = " ".join(text.split())
+    # Clean punctuation spacing for smoother phrasing
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.!?])", r"\1", text)
+    text = re.sub(r"([,.!?])([^\s])", r"\1 \2", text)
+    text = re.sub(r"\.{2,}", ".", text)
+
+    if text and text[-1] not in ".!?":
+        text = f"{text}."
 
     return text.strip()
 
@@ -244,8 +252,8 @@ def generate_silence_wav(duration_sec: float, sample_rate: int = 16000) -> bytes
     """
     Generate a silent WAV file of the specified duration.
 
-    Used as a placeholder speaker reference when no real voice sample exists.
-    XTTS-v2 will use a default voice if the reference provides no voice information.
+    Used as a placeholder when no real voice output is available.
+    Piper will fall back to silence if synthesis fails.
 
     Args:
         duration_sec: Duration of silence in seconds.

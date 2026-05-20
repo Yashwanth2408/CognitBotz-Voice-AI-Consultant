@@ -119,7 +119,7 @@ def _build_orchestrator():
     logger.info("Loading Faster Whisper STT model...")
     stt = SpeechToText()
 
-    logger.info("Loading XTTS-v2 TTS model...")
+    logger.info("Loading offline TTS (natural Indian English voice)...")
     tts = TextToSpeech()
 
     orchestrator = PipelineOrchestrator(

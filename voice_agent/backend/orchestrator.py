@@ -76,7 +76,7 @@ class PipelineOrchestrator:
             retriever: Configured KnowledgeRetriever with loaded FAISS index.
             response_generator: ResponseGenerator with configured GroqClient.
             stt: SpeechToText with loaded Faster Whisper model.
-            tts: TextToSpeech with loaded XTTS-v2 model.
+            tts: TextToSpeech with loaded Piper model.
         """
         self._retriever = retriever
         self._response_gen = response_generator
@@ -209,7 +209,7 @@ class PipelineOrchestrator:
             logger.error(f"LLM generation failed: {exc}", exc_info=True)
             return self._error_result(f"Response generation failed: {exc}")
 
-        # Stage 4: Text-to-Speech synthesis via XTTS-v2
+        # Stage 4: Text-to-Speech synthesis via Piper
         try:
             with timer.measure("text_to_speech"):
                 synthesis_result: SynthesisResult = self._tts.synthesise(

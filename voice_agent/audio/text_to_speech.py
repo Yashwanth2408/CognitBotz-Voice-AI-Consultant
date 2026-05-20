@@ -1,297 +1,324 @@
 """
 audio/text_to_speech.py
 -----------------------
-Fast neural voice synthesis using Microsoft Edge TTS.
+Fully offline voice synthesis.
 
-Design rationale:
-  - Edge TTS selected for speed (1-2s) and Indian female voice support.
-  - Uses cloud-based synthesis with zero GPU overhead.
-  - Operates asynchronously with proper thread isolation.
-  - Output format: WAV bytes for browser playback.
-  - Includes comprehensive error handling and fallback to silence.
+Default engine: MMS VITS (onecxi/mms-english-female-indic)
+  - English speech with an Indian female speaker (IndicTTS-trained)
+  - Runs locally via Hugging Face Transformers after one-time model download
+
+Fallback engine: Piper ONNX (en_IN-spicor-medium)
+  - Indian English accent, fast CPU inference
+  - Set TTS_ENGINE=piper in .env to use Piper only
 """
 
-import asyncio
-import io
-import re
-import threading
-import time
-import wave
-from dataclasses import dataclass
-from typing import Optional
+from __future__ import annotations
 
-from config.settings import AUDIO_SAMPLE_RATE
+import re
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Union
+
+import numpy as np
+import torch
+from transformers import AutoTokenizer, VitsModel
+
+from config.settings import (
+    TTS_AUTO_DOWNLOAD,
+    TTS_ENGINE,
+    TTS_LENGTH_SCALE,
+    TTS_MMS_MODEL_ID,
+    TTS_MODEL_PATH,
+    TTS_SENTENCE_PAUSE_SEC,
+    TTS_VOICES_DIR,
+)
+from utils.helpers import generate_silence_wav, numpy_to_wav_bytes
 from utils.logger import get_logger
-from utils.helpers import generate_silence_wav
 
 logger = get_logger(__name__)
 
-# ─────────────────────────────────────────────
-# Edge TTS Configuration
-# ─────────────────────────────────────────────
-EDGE_TTS_VOICE = "hi-IN-SwaraNeural"  # Indian female voice (Valid Edge TTS voice)
-EDGE_TTS_RATE = "+15%"  # Speaking rate adjustment (positive values speak faster)
-EDGE_TTS_PITCH = "+0Hz"  # Pitch adjustment (0Hz = normal)
-EDGE_TTS_VOLUME = "+0%"  # edge-tts expects volume as a percentage, not dB.
+_MIN_MODEL_BYTES = 1_000_000
+
+
+@dataclass(frozen=True)
+class SynthesisResult:
+    """Structured output from a TTS synthesis operation."""
+    wav_bytes: bytes
+    duration_sec: float
+    text_length: int
+    sample_rate: int
 
 
 @dataclass
-class SynthesisResult:
-    """Structured output from a TTS synthesis operation."""
-    wav_bytes: bytes        # WAV-formatted audio bytes
-    duration_sec: float     # Synthesis processing time
-    text_length: int        # Characters synthesised
-    sample_rate: int        # Output sample rate
+class _MmsVoice:
+    """Loaded MMS VITS model for Indian female English."""
+    model: VitsModel
+    tokenizer: AutoTokenizer
+    sample_rate: int
 
 
-def _synthesise_edge_tts_sync(text: str) -> Optional[bytes]:
+def _split_into_sentences(text: str) -> list[str]:
     """
-    Synchronous wrapper for Edge TTS using asyncio in dedicated thread.
-    
-    This runs in a separate thread to avoid asyncio conflicts with Streamlit.
-    
-    Args:
-        text: Text to synthesise.
-        
-    Returns:
-        Audio bytes (MP3 format from Edge TTS) or None on failure.
+    Split text into individual sentences for natural prosody.
+
+    Each sentence is synthesised separately with a short pause between,
+    which produces much more natural speech than one long utterance.
     """
-    from edge_tts import Communicate
-    
-    result_container = {'audio': None, 'error': None, 'chunk_count': 0}
-    
-    async def _async_synthesise():
-        try:
-            logger.info(f"[Edge TTS] Starting synthesis for text: {text[:80]}")
-            logger.info(f"[Edge TTS] Config: voice={EDGE_TTS_VOICE}, rate={EDGE_TTS_RATE}, pitch={EDGE_TTS_PITCH}")
-            
-            communicate = Communicate(
-                text=text,
-                voice=EDGE_TTS_VOICE,
-                rate=EDGE_TTS_RATE,
-                pitch=EDGE_TTS_PITCH,
-                volume=EDGE_TTS_VOLUME
-            )
-            
-            # Collect audio chunks
-            audio_data = io.BytesIO()
-            chunk_count = 0
-            
-            logger.info(f"[Edge TTS] Starting stream iteration...")
-            async for chunk in communicate.stream():
-                chunk_type = chunk.get("type", "unknown")
-                
-                if chunk_type == "audio":
-                    chunk_size = len(chunk.get("data", b""))
-                    audio_data.write(chunk["data"])
-                    chunk_count += 1
-                    logger.debug(f"[Edge TTS] Audio chunk {chunk_count}: {chunk_size} bytes")
-                elif chunk_type == "bytesreceived":
-                    bytes_recv = chunk.get("bytesreceived", 0)
-                    logger.debug(f"[Edge TTS] Bytes received: {bytes_recv}")
-            
-            audio_bytes = audio_data.getvalue()
-            result_container['chunk_count'] = chunk_count
-            logger.info(f"[Edge TTS] Stream complete - {len(audio_bytes)} bytes from {chunk_count} chunks")
-            
-            if not audio_bytes or len(audio_bytes) == 0:
-                raise ValueError(f"Edge TTS returned zero bytes after {chunk_count} chunks")
-            
-            result_container['audio'] = audio_bytes
-            logger.info(f"[Edge TTS] SUCCESS: {len(audio_bytes)} bytes ready for conversion")
-            
-        except Exception as e:
-            error_msg = f"{type(e).__name__}: {e}"
-            logger.error(f"[Edge TTS] Async synthesis error: {error_msg}", exc_info=True)
-            result_container['error'] = error_msg
-    
-    def _run_synthesis_loop() -> None:
-        loop: Optional[asyncio.AbstractEventLoop] = None
-        try:
-            logger.info("[Edge TTS] Creating worker event loop...")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            logger.info("[Edge TTS] Running async synthesis in worker thread...")
-            loop.run_until_complete(_async_synthesise())
-        except Exception as e:
-            error_msg = f"Event loop error: {type(e).__name__}: {e}"
-            logger.error(f"[Edge TTS] {error_msg}", exc_info=True)
-            result_container['error'] = error_msg
-        finally:
-            if loop is not None:
-                try:
-                    loop.close()
-                    logger.info("[Edge TTS] Worker event loop closed successfully")
-                except Exception:
-                    logger.debug("[Edge TTS] Event loop close skipped", exc_info=True)
-
-    worker = threading.Thread(
-        target=_run_synthesis_loop,
-        name="edge-tts-synthesis",
-        daemon=True,
-    )
-    worker.start()
-    worker.join()
-    
-    if result_container['error']:
-        logger.error(f"[Edge TTS] FAILED: {result_container['error']}")
-        logger.error(f"[Edge TTS] Chunks received before failure: {result_container['chunk_count']}")
-        return None
-    
-    audio_result = result_container['audio']
-    if audio_result:
-        logger.info(f"[Edge TTS] Returning {len(audio_result)} bytes to caller")
-    return audio_result
-
-
-def _split_into_chunks(text: str, max_chars: int = 300) -> list[str]:
-    """
-    Split long text into sentence-like chunks for TTS-friendly processing.
-
-    The current Edge TTS path can handle the full response, but keeping this
-    helper lets tests and future fallback synthesis paths share one splitter.
-    """
-    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
     if not cleaned:
         return []
-    if len(cleaned) <= max_chars:
-        return [cleaned]
 
-    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
-    chunks: list[str] = []
-    current = ""
-
-    for sentence in sentences:
-        if not sentence:
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    sentences: list[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
             continue
+        if part[-1] not in ".!?":
+            part = f"{part}."
+        sentences.append(part)
+    return sentences
 
-        if len(sentence) > max_chars:
-            if current:
-                chunks.append(current.strip())
-                current = ""
-            words = sentence.split()
-            word_chunk = ""
-            for word in words:
-                candidate = f"{word_chunk} {word}".strip()
-                if len(candidate) <= max_chars:
-                    word_chunk = candidate
-                else:
-                    if word_chunk:
-                        chunks.append(word_chunk)
-                    word_chunk = word
-            if word_chunk:
-                chunks.append(word_chunk)
+
+def _trim_edge_silence(
+    audio: np.ndarray,
+    sample_rate: int,
+    threshold: float = 0.008,
+    keep_ms: int = 12,
+) -> np.ndarray:
+    """Trim leading/trailing silence from a segment."""
+    if audio.size == 0:
+        return audio
+
+    mask = np.abs(audio) > threshold
+    if not np.any(mask):
+        return audio
+
+    start = int(np.argmax(mask))
+    end = int(len(audio) - np.argmax(mask[::-1]))
+    keep = int(sample_rate * keep_ms / 1000)
+    start = max(0, start - keep)
+    end = min(len(audio), end + keep)
+    return audio[start:end]
+
+
+def _join_segments_with_pauses(
+    segments: list[np.ndarray],
+    sample_rate: int,
+    pause_sec: float = TTS_SENTENCE_PAUSE_SEC,
+) -> np.ndarray:
+    """Join sentence audio with a short natural pause between each."""
+    if not segments:
+        return np.array([], dtype=np.float32)
+    if len(segments) == 1:
+        return segments[0]
+
+    pause = np.zeros(int(sample_rate * pause_sec), dtype=np.float32)
+    parts: list[np.ndarray] = []
+    for idx, segment in enumerate(segments):
+        if segment.size == 0:
             continue
-
-        candidate = f"{current} {sentence}".strip()
-        if len(candidate) <= max_chars:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current.strip())
-            current = sentence
-
-    if current:
-        chunks.append(current.strip())
-
-    return chunks
+        parts.append(segment)
+        if idx < len(segments) - 1:
+            parts.append(pause)
+    return np.concatenate(parts) if parts else np.array([], dtype=np.float32)
 
 
-def _load_tts_model():
-    """
-    Compatibility hook for older tests that expected an XTTS model loader.
-
-    This project now uses Edge TTS, so there is no local model to load. Importing
-    Communicate here still validates that the configured TTS backend is present.
-    """
-    from edge_tts import Communicate
-
-    return Communicate
+def _normalize_audio(audio: np.ndarray, target_peak: float = 0.92) -> np.ndarray:
+    """Apply a single gentle normalization pass to the full utterance."""
+    if audio.size == 0:
+        return audio
+    peak = float(np.max(np.abs(audio)))
+    if peak < 1e-8:
+        return audio
+    return np.clip(audio * (target_peak / peak), -1.0, 1.0).astype(np.float32)
 
 
-def _convert_audio_to_wav(audio_bytes: bytes) -> bytes:
-    """
-    Convert MP3 audio to WAV format if needed.
-    
-    Args:
-        audio_bytes: Audio data (typically MP3 from Edge TTS).
-        
-    Returns:
-        WAV-formatted audio bytes.
-    """
+# ─────────────────────────────────────────────
+# MMS VITS (default — Indian female English, offline)
+# ─────────────────────────────────────────────
+
+
+def _load_mms_model() -> Optional[_MmsVoice]:
+    """Load the MMS VITS model from local cache or Hugging Face hub."""
     try:
-        # Check if already WAV
-        if audio_bytes.startswith(b'RIFF'):
-            logger.debug(f"Audio already WAV: {len(audio_bytes)} bytes")
-            return audio_bytes
-        
-        # Check if MP3 (Edge TTS returns MP3)
-        is_mp3 = (
-            audio_bytes.startswith(b'ID3') or
-            (len(audio_bytes) >= 2 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0)
+        logger.info("Loading MMS TTS model: %s (offline after download)", TTS_MMS_MODEL_ID)
+        model = VitsModel.from_pretrained(TTS_MMS_MODEL_ID)
+        tokenizer = AutoTokenizer.from_pretrained(TTS_MMS_MODEL_ID)
+        model.eval()
+        sample_rate = int(model.config.sampling_rate)
+        logger.info("MMS TTS ready (sample_rate=%s)", sample_rate)
+        return _MmsVoice(model=model, tokenizer=tokenizer, sample_rate=sample_rate)
+    except Exception as exc:
+        logger.error("Failed to load MMS TTS: %s", exc, exc_info=True)
+        return None
+
+
+def _synthesize_mms_sentence(voice: _MmsVoice, text: str) -> np.ndarray:
+    """Synthesise a single sentence with MMS VITS (one sentence = natural prosody)."""
+    inputs = voice.tokenizer(text, return_tensors="pt")
+    with torch.no_grad():
+        waveform = voice.model(**inputs).waveform
+
+    audio = waveform.squeeze().cpu().numpy().astype(np.float32)
+    return _trim_edge_silence(audio, voice.sample_rate)
+
+
+# ─────────────────────────────────────────────
+# Piper ONNX (fallback — Indian English, offline)
+# ─────────────────────────────────────────────
+
+
+def _piper_model_paths() -> tuple[Path, Path]:
+    model_path = Path(TTS_MODEL_PATH)
+    return model_path, Path(f"{model_path}.json")
+
+
+def ensure_piper_voice_model() -> bool:
+    """Ensure Piper ONNX model files exist (optional fallback engine)."""
+    model_path, config_path = _piper_model_paths()
+
+    if TTS_AUTO_DOWNLOAD and (
+        not model_path.exists() or model_path.stat().st_size < _MIN_MODEL_BYTES
+    ):
+        try:
+            from piper.download_voices import download_voice
+
+            voice_id = model_path.stem
+            logger.info("Downloading Piper voice: %s", voice_id)
+            download_voice(voice_id, TTS_VOICES_DIR)
+        except Exception as exc:
+            logger.error("Failed to download Piper voice: %s", exc)
+
+    return (
+        model_path.exists()
+        and model_path.stat().st_size >= _MIN_MODEL_BYTES
+        and config_path.exists()
+    )
+
+
+def _load_piper_model():
+    """Load Piper voice when TTS_ENGINE=piper or as MMS fallback."""
+    from piper import PiperVoice
+    from piper.config import SynthesisConfig
+
+    if TTS_AUTO_DOWNLOAD:
+        ensure_piper_voice_model()
+
+    model_path, config_path = _piper_model_paths()
+    if not model_path.exists():
+        return None
+
+    try:
+        voice = PiperVoice.load(model_path, config_path=config_path, use_cuda=False)
+        return voice, SynthesisConfig(
+            length_scale=TTS_LENGTH_SCALE,
+            volume=1.0,
+            normalize_audio=True,
         )
-        
-        if is_mp3:
-            logger.info(f"Converting MP3 to WAV: {len(audio_bytes)} bytes")
-            try:
-                from pydub import AudioSegment
-                
-                # Load MP3. Edge may return MPEG frames without an ID3 tag, so
-                # pass the format explicitly instead of relying on header sniffing.
-                audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-                logger.debug(f"Loaded MP3: {len(audio.get_array_of_samples())} samples, {audio.frame_rate}Hz")
-                
-                # Export to WAV
-                wav_buffer = io.BytesIO()
-                audio.export(wav_buffer, format="wav")
-                wav_bytes = wav_buffer.getvalue()
-                
-                logger.info(f"MP3 to WAV conversion: {len(audio_bytes)} to {len(wav_bytes)} bytes")
-                return wav_bytes
-                
-            except ImportError as e:
-                logger.error(f"pydub not available: {e}, returning MP3 as-is")
-                return audio_bytes
-            except Exception as e:
-                logger.error(f"MP3 conversion failed: {e}", exc_info=True)
-                return audio_bytes
-        
-        # Unknown format, return as-is
-        header_hex = audio_bytes[:8].hex() if len(audio_bytes) >= 8 else audio_bytes.hex()
-        logger.warning(f"Unknown audio format (header: {header_hex}), returning as-is")
-        return audio_bytes
-        
-    except Exception as e:
-        logger.error(f"Audio conversion error: {e}", exc_info=True)
-        return audio_bytes
+    except Exception as exc:
+        logger.error("Failed to load Piper voice: %s", exc, exc_info=True)
+        return None
 
 
-def _wav_sample_rate(wav_bytes: bytes) -> int:
-    """Read a WAV byte stream's sample rate, falling back to app default."""
-    try:
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
-            return wav_file.getframerate()
-    except wave.Error:
-        return AUDIO_SAMPLE_RATE
+def _synthesize_piper_text(voice, syn_config, text: str) -> tuple[np.ndarray, int]:
+    """
+    Synthesise full text with Piper.
+
+    Piper yields one audio segment per sentence internally — best for natural flow.
+    """
+    sentence_chunks = list(voice.synthesize(text, syn_config=syn_config))
+    if not sentence_chunks:
+        raise RuntimeError("Piper returned no audio")
+
+    sample_rate = sentence_chunks[0].sample_rate
+    segments = [
+        _trim_edge_silence(chunk.audio_float_array, sample_rate)
+        for chunk in sentence_chunks
+    ]
+    combined = _join_segments_with_pauses(segments, sample_rate)
+    return _normalize_audio(combined), sample_rate
+
+
+def _synthesize_mms_text(voice: _MmsVoice, text: str) -> tuple[np.ndarray, int]:
+    """Synthesise full text sentence-by-sentence with MMS VITS."""
+    sentences = _split_into_sentences(text)
+    if not sentences:
+        raise RuntimeError("No sentences to synthesise")
+
+    segments: list[np.ndarray] = []
+    for sentence in sentences:
+        segments.append(_synthesize_mms_sentence(voice, sentence))
+
+    combined = _join_segments_with_pauses(segments, voice.sample_rate)
+    return _normalize_audio(combined), voice.sample_rate
+
+
+# ─────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────
+
+
+def is_tts_configured() -> bool:
+    """Return True when the configured offline TTS engine can run."""
+    if TTS_ENGINE == "piper":
+        return ensure_piper_voice_model()
+    # MMS loads from Hugging Face cache; assume available if engine is mms
+    return True
+
+
+def is_piper_configured() -> bool:
+    """Backward-compatible alias used by tests and diagnostics."""
+    return ensure_piper_voice_model()
+
+
+def _load_tts_model() -> Union[_MmsVoice, tuple, None]:
+    """Compatibility hook for tests — returns the active voice backend."""
+    if TTS_ENGINE == "piper":
+        return _load_piper_model()
+    return _load_mms_model()
 
 
 class TextToSpeech:
     """
-    Fast voice synthesis using Microsoft Edge TTS cloud service.
-    
-    - Supports Indian female voice (hi-IN-SwaraUnniF)
-    - Synthesis time: typically 1-3 seconds per request
-    - Cloud-based, no GPU required
-    - Thread-safe async handling
+    Offline voice synthesis.
+
+    Default: MMS VITS Indian female English (onecxi/mms-english-female-indic).
+    Fallback: Piper en_IN-spicor if MMS load fails.
     """
 
     def __init__(self) -> None:
-        """Initialise TextToSpeech."""
-        logger.info(f"TextToSpeech initialised with Edge TTS voice: {EDGE_TTS_VOICE}")
+        """Preload the configured offline TTS model."""
+        self._engine = TTS_ENGINE
+        self._mms: Optional[_MmsVoice] = None
+        self._piper = None
+        self._piper_config = None
+
+        if self._engine == "mms":
+            self._mms = _load_mms_model()
+            if self._mms is None:
+                logger.warning("MMS TTS failed to load; trying Piper fallback")
+                self._load_piper_fallback()
+        else:
+            self._load_piper_fallback()
+
+        if self._mms is not None:
+            logger.info("TextToSpeech ready: MMS Indian female English (%s)", TTS_MMS_MODEL_ID)
+        elif self._piper is not None:
+            logger.info("TextToSpeech ready: Piper (%s)", TTS_MODEL_PATH)
+        else:
+            logger.warning("No offline TTS model loaded; responses will be silent")
+
+    def _load_piper_fallback(self) -> None:
+        loaded = _load_piper_model()
+        if loaded is not None:
+            self._piper, self._piper_config = loaded
+            self._engine = "piper"
 
     def synthesise(self, text: str) -> SynthesisResult:
         """
-        Synthesise text to WAV audio.
+        Synthesise text to WAV audio (fully offline).
 
         Args:
             text: Clean text to synthesise (no markdown).
@@ -299,7 +326,6 @@ class TextToSpeech:
         Returns:
             SynthesisResult with audio bytes and metadata.
         """
-        # Handle empty text
         if not text or not text.strip():
             logger.info("TTS: Empty text, returning silence")
             silence = generate_silence_wav(0.5)
@@ -307,54 +333,65 @@ class TextToSpeech:
                 wav_bytes=silence,
                 duration_sec=0.0,
                 text_length=0,
-                sample_rate=AUDIO_SAMPLE_RATE,
+                sample_rate=16000,
+            )
+
+        if self._mms is None and self._piper is None:
+            logger.error("TTS: No offline model loaded; returning silence")
+            silence = generate_silence_wav(1.0)
+            return SynthesisResult(
+                wav_bytes=silence,
+                duration_sec=0.0,
+                text_length=len(text),
+                sample_rate=16000,
             )
 
         start = time.perf_counter()
-        logger.info(f"TTS: Starting synthesis for {len(text)} chars")
-        
+        logger.info("TTS [%s]: Starting synthesis for %s chars", self._engine, len(text))
+
         try:
-            # Call Edge TTS sync wrapper
-            audio_mp3 = _synthesise_edge_tts_sync(text)
-            
-            if not audio_mp3:
-                logger.error("TTS: Edge TTS returned no audio")
-                elapsed = time.perf_counter() - start
-                return SynthesisResult(
-                    wav_bytes=generate_silence_wav(1.0),
-                    duration_sec=elapsed,
-                    text_length=len(text),
-                    sample_rate=AUDIO_SAMPLE_RATE,
+            if self._mms is not None:
+                combined_audio, sample_rate = _synthesize_mms_text(self._mms, text)
+            else:
+                combined_audio, sample_rate = _synthesize_piper_text(
+                    self._piper, self._piper_config, text
                 )
-            
-            # Convert MP3 to WAV
-            audio_wav = _convert_audio_to_wav(audio_mp3)
-            
+
+            if combined_audio.size == 0:
+                raise RuntimeError("TTS returned no audio")
+
+            audio_wav = numpy_to_wav_bytes(combined_audio, sample_rate=sample_rate)
             elapsed = time.perf_counter() - start
-            
-            # Sanity check
+
             if audio_wav and len(audio_wav) > 100:
-                sample_rate = _wav_sample_rate(audio_wav)
-                logger.info(f"TTS: Success in {elapsed:.2f}s, {len(audio_wav)/1024:.1f} KB WAV")
+                logger.info(
+                    "TTS [%s]: Success in %.2fs, %.1f KB WAV, %.1fs speech",
+                    self._engine,
+                    elapsed,
+                    len(audio_wav) / 1024,
+                    len(combined_audio) / sample_rate,
+                )
                 return SynthesisResult(
                     wav_bytes=audio_wav,
                     duration_sec=elapsed,
                     text_length=len(text),
                     sample_rate=sample_rate,
                 )
-            else:
-                logger.error(f"TTS: Invalid WAV size: {len(audio_wav) if audio_wav else 0} bytes")
-                
-        except Exception as e:
+            logger.error("TTS: Invalid WAV size: %s bytes", len(audio_wav))
+        except Exception as exc:
             elapsed = time.perf_counter() - start
-            logger.error(f"TTS: Synthesis exception after {elapsed:.2f}s: {type(e).__name__}: {e}", exc_info=True)
-        
-        # Fallback: return silence
+            logger.error(
+                "TTS: Synthesis exception after %.2fs: %s",
+                elapsed,
+                exc,
+                exc_info=True,
+            )
+
         elapsed = time.perf_counter() - start
-        logger.warning(f"TTS: Returning silence fallback ({elapsed:.2f}s)")
+        logger.warning("TTS: Returning silence fallback (%.2fs)", elapsed)
         return SynthesisResult(
             wav_bytes=generate_silence_wav(1.0),
             duration_sec=elapsed,
             text_length=len(text),
-            sample_rate=AUDIO_SAMPLE_RATE,
+            sample_rate=16000,
         )

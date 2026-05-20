@@ -103,23 +103,47 @@ WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
 
 
 # ─────────────────────────────────────────────
-# TTS (XTTS-v2) Configuration
+# TTS (fully offline) Configuration
 # ─────────────────────────────────────────────
 
-# XTTS-v2 multilingual model identifier per spec section 17
-TTS_MODEL_NAME: str = os.getenv(
-    "TTS_MODEL_NAME",
-    "tts_models/multilingual/multi-dataset/xtts_v2"
+# Engine: "piper" = natural sentence flow (default), "mms" = Indian female VITS
+TTS_ENGINE: str = os.getenv("TTS_ENGINE", "piper").strip().lower()
+
+# MMS VITS — English with Indian female speaker (offline after first download)
+TTS_MMS_MODEL_ID: str = os.getenv(
+    "TTS_MMS_MODEL_ID",
+    "onecxi/mms-english-female-indic",
 )
 
-# Language code for Indian English
-TTS_LANGUAGE: str = os.getenv("TTS_LANGUAGE", "en")
+TTS_VOICES_DIR: Path = Path(__file__).parent.parent / "assets" / "voices"
 
-# Speaker reference WAV — users place their own Indian female voice sample here
-TTS_SPEAKER_WAV: str = os.getenv(
-    "TTS_SPEAKER_WAV",
-    str(Path(__file__).parent.parent / "assets" / "voices" / "reference.wav")
+# Piper fallback voice — Indian English (en_IN-spicor-medium)
+TTS_MODEL_PATH: str = os.getenv(
+    "TTS_MODEL_PATH",
+    str(TTS_VOICES_DIR / "en_IN-spicor-medium.onnx"),
 )
+
+# Speaking rate for Piper (slightly slower = clearer, more natural)
+TTS_LENGTH_SCALE: float = float(os.getenv("TTS_LENGTH_SCALE", "0.98"))
+
+# Pause between sentences when stitching audio (seconds)
+TTS_SENTENCE_PAUSE_SEC: float = float(os.getenv("TTS_SENTENCE_PAUSE_SEC", "0.32"))
+
+# Download Piper voice on startup when missing (one-time internet)
+TTS_AUTO_DOWNLOAD: bool = os.getenv("TTS_AUTO_DOWNLOAD", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Legacy env names (still honoured for overrides)
+if os.getenv("PIPER_MODEL_PATH"):
+    TTS_MODEL_PATH = os.getenv("PIPER_MODEL_PATH", TTS_MODEL_PATH)
+PIPER_MODEL_PATH: str = TTS_MODEL_PATH
+PIPER_BINARY_PATH: str = os.getenv("PIPER_BINARY_PATH", "")
+PIPER_CONFIG_PATH: str = f"{TTS_MODEL_PATH}.json"
+PIPER_SPEAKER_ID: int = int(os.getenv("PIPER_SPEAKER_ID", "0"))
+PIPER_LENGTH_SCALE: float = TTS_LENGTH_SCALE
 
 
 # ─────────────────────────────────────────────

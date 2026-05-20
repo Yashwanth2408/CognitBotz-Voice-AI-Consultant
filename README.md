@@ -20,7 +20,7 @@ Aria, the Voice AI Consultant, processes queries through a modular, low-latency 
 2. **Audio Processing**: Transcription via Faster Whisper (`small.en`).
 3. **Knowledge Retrieval**: Query embedding (BGE Small v1.5) and search against a local vector database (FAISS) containing chunked company facts.
 4. **LLM Orchestration**: Groq API (Llama 3 / DeepSeek R1 fallback) with sliding window memory and RAG context grounding.
-5. **Voice Synthesis**: Response text normalisation and neural speech synthesis (Coqui XTTS-v2) using a speaker voice reference.
+5. **Voice Synthesis**: Response text normalisation and neural speech synthesis (Piper TTS) using a local ONNX model.
 6. **Interface**: Responsive Next.js layout displaying live status, chat bubbles, source citations, and latency metrics per pipeline stage.
 
 ---
@@ -50,7 +50,7 @@ CognitBotz-voice-agent/
     │
     ├── config/                 # Application configuration & prompts
     ├── utils/                  # Logging, performance metrics, & validation
-    ├── audio/                  # STT (Faster Whisper) & TTS (XTTS-v2)
+    ├── audio/                  # STT (Faster Whisper) & TTS (Piper)
     ├── rag/                    # Retrieval-Augmented Generation (FAISS)
     ├── llm/                    # Groq API client & response assembly
     ├── memory/                 # HistoryManager and sliding-window context
@@ -110,10 +110,27 @@ Before launching the interface, compile the vector search database from `knowled
 python voice_agent/run_ingestion.py
 ```
 
-### Step 2: Custom Speaker Reference (Optional but Recommended)
-For high-fidelity voice cloning in a natural Indian accent:
-1. Record a 30–60 second WAV audio file of an Indian female speaking clearly in English.
-2. Save it at: `voice_agent/assets/voices/reference.wav`.
+### Step 2: Offline TTS Voice (one-time download)
+The assistant uses **MMS VITS** (`onecxi/mms-english-female-indic`) — English speech with an **Indian female** speaker. Fully offline after the first run (model caches to `~/.cache/huggingface`).
+
+```powershell
+pip install piper-tts onnxruntime
+# First API start downloads the MMS model automatically (~80 MB)
+```
+
+Optional Piper fallback (Indian English accent, faster CPU):
+
+```env
+TTS_ENGINE=piper
+TTS_MODEL_PATH=voice_agent/assets/voices/en_IN-spicor-medium.onnx
+```
+
+Default `.env`:
+
+```env
+TTS_ENGINE=mms
+TTS_MMS_MODEL_ID=onecxi/mms-english-female-indic
+```
 
 ### Step 3: Start Services
 Use the provided PowerShell script to launch both the FastAPI backend and the Next.js frontend simultaneously:

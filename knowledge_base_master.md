@@ -583,7 +583,7 @@ Guided paths to value realization:
 - **RPA Platforms**: UiPath (UiPath Agentic Automation, Orchestrator), Automation Anywhere, Blue Prism, and Microsoft Power Automate.
 - **SAP Ecosystem**: SAP S/4HANA, SuccessFactors, Ariba, SAP BTP AI Automation, SAP AI Core, Joule assistant, SAP Fiori, and ABAP.
 - **Orchestration Frameworks**: Semantic Kernel, Prompt Flow, AutoGen, CrewAI, LangChain, LlamaIndex, OpenAI, Anthropic, Hugging Face, Vertex AI, and Amazon Bedrock.
-- **Voice Technology Reference**: Faster Whisper (speech recognition), Silero VAD (Voice Activity Detection), RNNoise (noise suppression), and XTTS-v2 (neural speech synthesis).
+- **Voice Technology Reference**: Faster Whisper (speech recognition), Silero VAD (Voice Activity Detection), RNNoise (noise suppression), and Piper (neural speech synthesis).
 
 ---
 

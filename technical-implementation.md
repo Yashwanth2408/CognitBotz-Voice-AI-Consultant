@@ -103,7 +103,7 @@ Response Generation
     │
     ▼
 Neural Text-to-Speech
-(XTTS-v2)
+(Piper)
     │
     ▼
 Natural Audio Response
@@ -461,20 +461,20 @@ User:
 Assistant understands context automatically.
 
 17. Voice Synthesis Layer
-XTTS-v2
+Piper
 
 Selected for:
 
 Natural voice quality
 Human-like speech
-Voice cloning
-Multilingual support
+Fast local synthesis
+Multiple voice models
 Local execution
 18. Indian Female Voice Strategy
 
 To create a natural Indian female voice:
 
-A clean 30–60 second voice sample will be used as a speaker reference.
+A high-quality Piper model matching the desired accent will be selected.
 
 Desired characteristics:
 
@@ -484,7 +484,7 @@ Professional tone
 Friendly delivery
 Natural pacing
 
-XTTS-v2 will clone these voice characteristics and synthesize all responses using the selected voice identity.
+Piper will synthesize all responses using the selected voice model.
 
 19. Audio Output System
 
@@ -494,7 +494,7 @@ Generated Response
        ↓
 Text Normalization
        ↓
-XTTS-v2
+Piper
        ↓
 Audio Generation
        ↓

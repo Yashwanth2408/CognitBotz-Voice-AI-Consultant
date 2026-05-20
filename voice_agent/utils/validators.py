@@ -19,7 +19,6 @@ from config.settings import (
     GROQ_API_KEY,
     KNOWLEDGE_BASE_PATH,
     FAISS_INDEX_DIR,
-    TTS_SPEAKER_WAV,
 )
 from config.constants import FAISS_INDEX_FILENAME, FAISS_DOCSTORE_FILENAME
 from utils.logger import get_logger
@@ -148,27 +147,38 @@ def validate_faiss_index() -> ValidationResult:
 
 def validate_speaker_reference() -> ValidationResult:
     """
-    Check that the TTS speaker reference WAV file exists.
-    This is non-blocking — XTTS-v2 uses a default voice if reference is absent,
-    but voice quality will be reduced compared to a real Indian female reference.
+    Check offline TTS configuration (MMS or Piper).
+    Non-blocking — MMS downloads on first synthesis if missing.
     """
-    wav_path = Path(TTS_SPEAKER_WAV)
-    if not wav_path.exists():
+    from config.settings import TTS_ENGINE, TTS_MMS_MODEL_ID, TTS_MODEL_PATH
+    from audio.text_to_speech import ensure_piper_voice_model, is_tts_configured
+
+    if TTS_ENGINE == "mms":
         return ValidationResult(
-            passed=False,
-            component="Speaker Reference WAV",
-            message=f"Speaker reference not found at: {wav_path}\n"
-                    f"A placeholder silence file will be used. "
-                    f"Voice quality may not match the desired Indian female accent. "
-                    f"Place a 30–60s Indian English female voice WAV at: {wav_path}",
-            is_blocking=False,  # App can run with default XTTS voice
+            passed=True,
+            component="Offline TTS",
+            message=(
+                f"MMS engine: {TTS_MMS_MODEL_ID} "
+                "(Indian female English; downloads on first use)"
+            ),
         )
 
-    wav_size = wav_path.stat().st_size
+    model_path = Path(TTS_MODEL_PATH)
+    if not ensure_piper_voice_model():
+        return ValidationResult(
+            passed=False,
+            component="Offline TTS",
+            message=(
+                f"Piper model not found at {model_path}. "
+                "Run setup_tts_voice.py or set TTS_ENGINE=mms."
+            ),
+            is_blocking=False,
+        )
+
     return ValidationResult(
-        passed=True,
-        component="Speaker Reference WAV",
-        message=f"Speaker reference found ({wav_size / 1024:.1f} KB): {wav_path}",
+        passed=is_tts_configured(),
+        component="Offline TTS",
+        message=f"Piper engine: {model_path}",
     )
 
 

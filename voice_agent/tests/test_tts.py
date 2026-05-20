@@ -1,7 +1,7 @@
 """
 tests/test_tts.py
 -----------------
-Unit tests for the Text-to-Speech module (XTTS-v2).
+Unit tests for the Text-to-Speech module (Piper).
 """
 
 import sys
@@ -45,7 +45,15 @@ class TestTextNormalisation:
     def test_expands_ampersand_for_speech(self):
         from utils.helpers import normalize_text_for_tts
         result = normalize_text_for_tts("AI & Automation services")
-        assert result == "AI and Automation services"
+        assert result == "AI and Automation services."
+
+    def test_bullet_lines_become_sentence_breaks(self):
+        from utils.helpers import normalize_text_for_tts
+        text = "We offer:\n- AI automation\n- Consulting"
+        result = normalize_text_for_tts(text)
+        assert "AI automation" in result
+        assert "Consulting" in result
+        assert "\n" not in result
 
     def test_truncate_at_sentence_boundary(self):
         from utils.helpers import truncate_text
@@ -55,53 +63,57 @@ class TestTextNormalisation:
         assert result.endswith(".") or result.endswith("...")
 
 
-class TestChunkSplitting:
-    """Test the sentence-chunking logic without loading XTTS-v2."""
+class TestSentenceSplitting:
+    """Test sentence splitting for natural TTS pacing."""
 
-    def test_short_text_stays_single_chunk(self):
-        from audio.text_to_speech import _split_into_chunks
+    def test_short_text_single_sentence(self):
+        from audio.text_to_speech import _split_into_sentences
         text = "Hello, I am Aria, your CognitBotz assistant."
-        chunks = _split_into_chunks(text, max_chars=300)
-        assert len(chunks) == 1
-        assert text in chunks[0]
+        sentences = _split_into_sentences(text)
+        assert len(sentences) == 1
 
-    def test_long_text_splits_into_multiple_chunks(self):
-        from audio.text_to_speech import _split_into_chunks
-        # Create a text clearly exceeding 250 chars
+    def test_long_text_splits_into_sentences(self):
+        from audio.text_to_speech import _split_into_sentences
         text = (
             "CognitBotz provides intelligent automation. "
             "We also offer AI consulting services. "
-            "Our team has delivered over 500 projects. "
-            "We operate in five countries globally. "
-            "Our CTO is a five-time UiPath MVP."
+            "Our team has delivered over 500 projects."
         )
-        chunks = _split_into_chunks(text, max_chars=80)
-        assert len(chunks) > 1, "Long text should be split into multiple chunks"
+        sentences = _split_into_sentences(text)
+        assert len(sentences) == 3
 
-    def test_chunks_preserve_content(self):
-        from audio.text_to_speech import _split_into_chunks
+    def test_sentences_preserve_content(self):
+        from audio.text_to_speech import _split_into_sentences
         text = "First sentence. Second sentence. Third sentence."
-        chunks = _split_into_chunks(text, max_chars=25)
-        all_text = " ".join(chunks)
-        # All original content should be present
+        sentences = _split_into_sentences(text)
+        all_text = " ".join(sentences)
         assert "First sentence" in all_text
         assert "Second sentence" in all_text
         assert "Third sentence" in all_text
 
 
+def _require_tts() -> None:
+    from audio.text_to_speech import TextToSpeech
+    tts = TextToSpeech()
+    if tts._mms is None and tts._piper is None:
+        pytest.skip("Offline TTS model is not available for tests.")
+
+
 class TestTextToSpeech:
-    """Integration tests for XTTS-v2 synthesis."""
+    """Integration tests for offline TTS synthesis."""
 
     @pytest.mark.slow
     def test_tts_model_loads(self):
-        """XTTS-v2 model should load without error."""
-        from audio.text_to_speech import _load_tts_model
-        model = _load_tts_model()
-        assert model is not None
+        """TTS backend should load without error."""
+        _require_tts()
+        from audio.text_to_speech import TextToSpeech
+        tts = TextToSpeech()
+        assert tts._mms is not None or tts._piper is not None
 
     @pytest.mark.slow
     def test_synthesise_short_text_returns_wav(self):
         """Synthesis should return valid WAV bytes."""
+        _require_tts()
         from audio.text_to_speech import TextToSpeech
         tts = TextToSpeech()
         result = tts.synthesise("Hello from CognitBotz.")
@@ -121,6 +133,7 @@ class TestTextToSpeech:
     @pytest.mark.slow
     def test_synthesise_empty_text_returns_silence(self):
         """Empty text input should return silence, not crash."""
+        _require_tts()
         from audio.text_to_speech import TextToSpeech
         tts = TextToSpeech()
         result = tts.synthesise("")
@@ -130,6 +143,7 @@ class TestTextToSpeech:
     @pytest.mark.slow
     def test_synthesise_inside_running_event_loop_returns_wav(self):
         """FastAPI endpoints call TTS while an asyncio loop is already running."""
+        _require_tts()
         from audio.text_to_speech import TextToSpeech
 
         async def run_tts():

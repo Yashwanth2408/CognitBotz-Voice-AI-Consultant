@@ -120,7 +120,7 @@ class TestEmbeddings:
 
         texts = [
             "CognitBotz provides AI automation.",
-            "XTTS-v2 synthesises natural voice.",
+            "Piper synthesises natural voice.",
             "FAISS is used for vector search.",
         ]
         vectors = embed_documents(texts)
@@ -133,7 +133,7 @@ class TestEmbeddings:
         from rag.embeddings import embed_query
         import numpy as np
 
-        v1 = embed_query("What is XTTS-v2?")
+        v1 = embed_query("What is Piper TTS?")
         v2 = embed_query("What is FAISS?")
         cosine_sim = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 

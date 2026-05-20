@@ -75,7 +75,7 @@ async def startup_event():
         logger.info("Loading Faster Whisper STT model...")
         _stt = SpeechToText()
 
-        logger.info("Loading XTTS-v2 TTS model...")
+        logger.info("Loading offline TTS (natural Indian English voice)...")
         tts = TextToSpeech()
 
         # Initialize orchestrator
