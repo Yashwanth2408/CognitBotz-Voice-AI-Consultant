@@ -5,6 +5,7 @@ export interface Message {
   id: string
   role: "user" | "assistant"
   text: string
+  user_query?: string
   audio_bytes_b64?: string
   autoPlay?: boolean
   timestamp: string
@@ -33,6 +34,9 @@ interface ConversationStore {
   addMessage: (message: Message) => void
   sendTextMessage: (text: string) => Promise<void>
   sendAudioMessage: (audioBlob: Blob) => Promise<void>
+  regenerateFromQuery: (query: string) => Promise<void>
+  newSession: () => Promise<void>
+  deleteSession: () => Promise<void>
   clearHistory: () => Promise<void>
   initialize: () => Promise<void>
 }
@@ -78,6 +82,7 @@ export const useConversationStore = create<ConversationStore>((set) => ({
           id: (Date.now() + 1).toString(),
           role: "assistant",
           text: response.data.response_text,
+          user_query: trimmedText,
           audio_bytes_b64: response.data.audio_bytes_b64,
           autoPlay: true,
           timestamp: new Date().toISOString(),
@@ -129,6 +134,7 @@ export const useConversationStore = create<ConversationStore>((set) => ({
           id: (Date.now() + 1).toString(),
           role: "assistant",
           text: response.data.response_text,
+          user_query: response.data.transcript,
           audio_bytes_b64: response.data.audio_bytes_b64,
           autoPlay: true,
           timestamp: new Date().toISOString(),
@@ -145,6 +151,88 @@ export const useConversationStore = create<ConversationStore>((set) => ({
       const message = error instanceof Error ? error.message : "Unknown error"
       set({ error: `Error: ${message}` })
       console.error("Error sending audio:", error)
+    } finally {
+      set({ isLoading: false })
+    }
+  },
+
+  regenerateFromQuery: async (query: string) => {
+    const trimmedText = query.trim()
+    if (!trimmedText) return
+
+    set({ isLoading: true, error: null })
+
+    try {
+      const response = await axios.post(`${API_BASE}/api/chat/text`, {
+        text: trimmedText,
+      })
+
+      if (response.data.success) {
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          text: response.data.response_text,
+          user_query: trimmedText,
+          audio_bytes_b64: response.data.audio_bytes_b64,
+          autoPlay: true,
+          timestamp: new Date().toISOString(),
+          latency: response.data.latency,
+          source_cards: response.data.source_cards,
+        }
+
+        set((state) => ({
+          messages: [...state.messages, assistantMessage],
+        }))
+      } else {
+        set({ error: response.data.error || "Failed to regenerate response" })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error"
+      set({ error: `Error: ${message}` })
+      console.error("Error regenerating response:", error)
+    } finally {
+      set({ isLoading: false })
+    }
+  },
+
+  newSession: async () => {
+    set({ isLoading: true, error: null })
+    try {
+      await axios.post(`${API_BASE}/api/history/clear`)
+      const response = await axios.get(`${API_BASE}/api/history`)
+      if (response.data.success && response.data.messages) {
+        const messages: Message[] = response.data.messages.map(
+          (msg: any, idx: number) => ({
+            id: `session-${idx}-${Date.now()}`,
+            role: msg.role,
+            text: msg.text,
+            audio_bytes_b64: msg.audio_bytes_b64,
+            autoPlay: false,
+            timestamp: msg.timestamp,
+          })
+        )
+        set({ messages })
+      } else {
+        set({ messages: [] })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error"
+      set({ error: `Error: ${message}` })
+      console.error("Error starting new session:", error)
+    } finally {
+      set({ isLoading: false })
+    }
+  },
+
+  deleteSession: async () => {
+    set({ isLoading: true, error: null })
+    try {
+      await axios.post(`${API_BASE}/api/history/clear`)
+      set({ messages: [] })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error"
+      set({ error: `Error: ${message}` })
+      console.error("Error deleting session:", error)
     } finally {
       set({ isLoading: false })
     }

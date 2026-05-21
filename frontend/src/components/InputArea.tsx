@@ -2,9 +2,15 @@
 
 import { useState, useRef } from "react"
 import { useConversationStore } from "@/store/conversationStore"
-import { Send, Mic, Square } from "lucide-react"
+import { Send, Mic, PlusCircle, Trash2 } from "lucide-react"
+import { motion } from "framer-motion"
 
-export default function InputArea() {
+interface InputAreaProps {
+  onNewSession?: () => void
+  onDeleteSession?: () => void
+}
+
+export default function InputArea({ onNewSession, onDeleteSession }: InputAreaProps) {
   const { sendTextMessage, sendAudioMessage, isLoading } = useConversationStore()
   const [text, setText] = useState("")
   const [isRecording, setIsRecording] = useState(false)
@@ -61,59 +67,91 @@ export default function InputArea() {
     }
   }
 
-  const formatRecordingTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
-  }
-
   return (
-    <div className="border-t border-dark-border bg-dark-bg p-4">
-      <div className="max-w-4xl mx-auto w-full">
-        <form
-          onSubmit={handleSubmit}
-          className="flex items-center gap-3 rounded-lg border border-dark-border bg-dark-surface p-2"
+    <div className="w-full border-t border-dark-border bg-primary-dark p-4 flex flex-col gap-3">
+      {/* Main input pill */}
+      <form
+        onSubmit={handleSubmit}
+        className="flex items-center gap-2 rounded-full border border-accent-border bg-dark-input px-4 py-2.5 transition-all focus-within:border-accent-mauve/50"
+      >
+        <input
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={
+            isRecording
+              ? `Recording ${Math.floor(recordingTime / 60)
+                  .toString()
+                  .padStart(2, "0")}:${(recordingTime % 60)
+                  .toString()
+                  .padStart(2, "0")}`
+              : "Type a message or speak…"
+          }
+          disabled={isLoading || isRecording}
+          className="flex-1 bg-transparent text-white placeholder-dark-muted focus:outline-none text-body disabled:opacity-50"
+        />
+
+        {/* Mic button */}
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          type="button"
+          onClick={isRecording ? stopRecording : startRecording}
+          disabled={isLoading}
+          className={`flex items-center justify-center w-9 h-9 rounded-full transition-all flex-shrink-0 ${
+            isRecording
+              ? "bg-dark-input border border-dark-border animate-pulse"
+              : "bg-dark-input border border-dark-border hover:border-accent-mauve/40"
+          }`}
         >
-          <button
-            type="button"
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={isLoading}
-            className={`h-11 w-11 rounded-md flex items-center justify-center border transition-colors ${
-              isRecording
-                ? "bg-red-950/30 border-accent-danger text-red-200"
-                : "bg-dark-bg border-dark-border text-dark-muted hover:text-dark-text hover:bg-dark-panel"
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-            title={isRecording ? "Stop recording" : "Start recording"}
-          >
-            {isRecording ? <Square size={18} /> : <Mic size={19} />}
-          </button>
+          <Mic
+            size={18}
+            className={isRecording ? "text-accent-mauve" : "text-dark-muted2"}
+            strokeWidth={2}
+          />
+        </motion.button>
 
-          <div className="flex-1">
-            <input
-              type="text"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={isRecording ? `Recording ${formatRecordingTime(recordingTime)}` : "Ask about CognitBotz..."}
-              disabled={isLoading || isRecording}
-              className="w-full px-3 py-3 bg-transparent text-dark-text placeholder-dark-muted focus:outline-none disabled:opacity-50"
-            />
-          </div>
+        {/* Send button */}
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          type="submit"
+          disabled={isLoading || !text.trim() || isRecording}
+          className="flex items-center justify-center w-9 h-9 rounded-full bg-accent-mauve hover:bg-accent-mauve/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+        >
+          {isLoading ? (
+            <div className="w-4 h-4 rounded-full border-2 border-black border-t-transparent animate-spin" />
+          ) : (
+            <Send size={18} className="text-black" strokeWidth={2} />
+          )}
+        </motion.button>
+      </form>
 
-          <button
-            type="submit"
-            disabled={isLoading || !text.trim() || isRecording}
-            className="h-11 px-4 rounded-md bg-dark-text text-dark-bg font-medium flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/90 transition-colors"
-          >
-            {isLoading ? (
-              <div className="w-4 h-4 rounded-full border-2 border-dark-bg border-t-transparent animate-spin" />
-            ) : (
-              <>
-                <Send size={17} />
-                <span>Send</span>
-              </>
-            )}
-          </button>
-        </form>
+      {/* Session controls */}
+      <div className="flex justify-start gap-2 px-1">
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          type="button"
+          onClick={onNewSession}
+          className="inline-flex items-center gap-1.5 rounded-full border border-dark-border bg-dark-input px-3 py-1.5 text-xs text-dark-muted2 hover:text-white"
+          title="Start new session"
+        >
+          <PlusCircle size={14} />
+          New Session
+        </motion.button>
+
+        <motion.button
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          type="button"
+          onClick={onDeleteSession}
+          className="inline-flex items-center gap-1.5 rounded-full border border-dark-border bg-dark-input px-3 py-1.5 text-xs text-dark-muted2 hover:text-white"
+          title="Delete current session"
+        >
+          <Trash2 size={14} />
+          Delete Session
+        </motion.button>
       </div>
     </div>
   )

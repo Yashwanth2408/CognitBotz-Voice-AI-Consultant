@@ -6,15 +6,29 @@ import { Play, Pause, Volume2 } from "lucide-react"
 interface AudioPlayerProps {
   audioBase64: string
   autoPlay?: boolean
+  replayNonce?: number
 }
 
-export default function AudioPlayer({ audioBase64, autoPlay = false }: AudioPlayerProps) {
+export default function AudioPlayer({
+  audioBase64,
+  autoPlay = false,
+  replayNonce = 0,
+}: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const hasAutoPlayedRef = useRef(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
+  const [bars, setBars] = useState<number[]>([])
   const audioUrl = `data:audio/wav;base64,${audioBase64}`
+
+  useEffect(() => {
+    const nextBars = Array.from({ length: 36 }, (_, idx) => {
+      const v = Math.abs(Math.sin((idx + 1) * 1.31))
+      return 0.2 + v * 0.8
+    })
+    setBars(nextBars)
+  }, [audioBase64])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -51,6 +65,16 @@ export default function AudioPlayer({ audioBase64, autoPlay = false }: AudioPlay
       })
   }, [autoPlay, audioBase64])
 
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio || replayNonce === 0) return
+    audio.currentTime = 0
+    setCurrentTime(0)
+    audio.play()
+      .then(() => setIsPlaying(true))
+      .catch(() => setIsPlaying(false))
+  }, [replayNonce])
+
   const togglePlay = async () => {
     const audio = audioRef.current
     if (!audio) return
@@ -70,14 +94,6 @@ export default function AudioPlayer({ audioBase64, autoPlay = false }: AudioPlay
     setIsPlaying(true)
   }
 
-  const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const time = parseFloat(e.target.value)
-    const audio = audioRef.current
-    if (!audio) return
-    audio.currentTime = time
-    setCurrentTime(time)
-  }
-
   const formatTime = (time: number) => {
     if (!time || isNaN(time)) return "0:00"
     const minutes = Math.floor(time / 60)
@@ -85,33 +101,37 @@ export default function AudioPlayer({ audioBase64, autoPlay = false }: AudioPlay
     return `${minutes}:${seconds.toString().padStart(2, "0")}`
   }
 
+  const progressRatio = duration > 0 ? Math.min(currentTime / duration, 1) : 0
+
   return (
-    <div className="flex items-center gap-3 bg-dark-bg rounded-md p-3 border border-dark-border">
+    <div className="flex items-center gap-3 bg-dark-card rounded-2xl p-3 border border-dark-border">
       <audio ref={audioRef} src={audioUrl} preload="metadata" />
 
       <button
         onClick={togglePlay}
-        className="flex-shrink-0 p-2 rounded-md bg-dark-panel hover:bg-dark-border text-dark-text transition-colors"
+        className="flex-shrink-0 p-2 rounded-full bg-dark-input hover:bg-dark-border text-white transition-colors border border-dark-border"
         aria-label={isPlaying ? "Pause response audio" : "Play response audio"}
       >
         {isPlaying ? <Pause size={17} /> : <Play size={17} />}
       </button>
 
-      <div className="text-xs text-dark-muted tabular-nums min-w-10">
-        {formatTime(currentTime)}
+      <div className="flex-1 h-10 px-2">
+        <div className="h-full flex items-end gap-[2px]">
+          {bars.map((bar, index) => {
+            const isFilled = index / bars.length <= progressRatio
+            return (
+              <span
+                key={index}
+                className={`w-[3px] rounded-sm ${isFilled ? "bg-accent-mauve" : "bg-dark-border"}`}
+                style={{ height: `${Math.max(20, bar * 100)}%` }}
+              />
+            )
+          })}
+        </div>
       </div>
 
-      <input
-        type="range"
-        min="0"
-        max={duration || 0}
-        value={currentTime}
-        onChange={handleProgressChange}
-        className="flex-1 h-1 bg-dark-border rounded-lg appearance-none cursor-pointer accent-white"
-      />
-
-      <div className="text-xs text-dark-muted tabular-nums min-w-10 text-right">
-        {formatTime(duration)}
+      <div className="text-xs text-dark-muted tabular-nums min-w-20 text-right">
+        {formatTime(Math.max(duration - currentTime, 0))}
       </div>
 
       <Volume2 size={15} className="text-dark-muted" />
